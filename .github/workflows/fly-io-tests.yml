@@ -1,0 +1,297 @@
+# This workflow deploys n8n to Fly.io for E2E testing
+# It creates an ephemeral Fly.io app, runs tests against it, and then destroys it
+
+name: 'Fly.io E2E Tests'
+
+on:
+  workflow_dispatch:
+    inputs:
+      docker_image:
+        description: 'Docker image to deploy (e.g., n8nio/n8n:nightly)'
+        required: false
+        default: 'n8nio/n8n:nightly'
+        type: string
+      fly_region:
+        description: 'Fly.io region to deploy to'
+        required: false
+        default: 'iad'
+        type: string
+      test_shards:
+        description: 'Number of test shards for parallel execution'
+        required: false
+        default: '3'
+        type: string
+      keep_app:
+        description: 'Keep the Fly.io app after tests (for debugging)'
+        required: false
+        default: false
+        type: boolean
+
+  # Can be called by other workflows
+  workflow_call:
+    inputs:
+      docker_image:
+        description: 'Docker image to deploy'
+        required: false
+        type: string
+        default: 'n8nio/n8n:nightly'
+      fly_region:
+        description: 'Fly.io region'
+        required: false
+        type: string
+        default: 'iad'
+      test_shards:
+        description: 'Number of test shards'
+        required: false
+        type: string
+        default: '3'
+      keep_app:
+        description: 'Keep app after tests'
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      FLY_API_TOKEN:
+        required: true
+      CURRENTS_RECORD_KEY:
+        required: false
+
+env:
+  FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+  NODE_OPTIONS: '--max-old-space-size=3072'
+
+jobs:
+  # Generate a unique app name for this test run
+  setup:
+    name: Setup Test Environment
+    runs-on: ubuntu-latest
+    outputs:
+      app_name: ${{ steps.generate-name.outputs.app_name }}
+      app_url: ${{ steps.generate-name.outputs.app_url }}
+      shards_matrix: ${{ steps.generate-shards.outputs.matrix }}
+    steps:
+      - name: Generate unique app name
+        id: generate-name
+        run: |
+          # Generate a unique app name using run ID and attempt number
+          APP_NAME="n8n-test-${{ github.run_id }}-${{ github.run_attempt }}"
+          # Fly.io app names must be lowercase and max 63 chars
+          APP_NAME=$(echo "$APP_NAME" | tr '[:upper:]' '[:lower:]' | cut -c1-63)
+          echo "app_name=${APP_NAME}" >> "$GITHUB_OUTPUT"
+          echo "app_url=https://${APP_NAME}.fly.dev" >> "$GITHUB_OUTPUT"
+          echo "Generated app name: ${APP_NAME}"
+
+      - name: Generate shards matrix
+        id: generate-shards
+        run: |
+          SHARD_COUNT="${{ inputs.test_shards || '3' }}"
+          # Generate array [1, 2, 3, ...] for the number of shards
+          MATRIX=$(seq 1 "$SHARD_COUNT" | jq -R . | jq -s .)
+          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
+          echo "Test shards: ${MATRIX}"
+
+  # Deploy n8n to Fly.io
+  deploy:
+    name: Deploy to Fly.io
+    needs: setup
+    runs-on: ubuntu-latest
+    outputs:
+      deployed: ${{ steps.deploy.outputs.deployed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Fly CLI
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Create Fly.io app
+        id: create-app
+        run: |
+          echo "Creating Fly.io app: ${{ needs.setup.outputs.app_name }}"
+          flyctl apps create "${{ needs.setup.outputs.app_name }}" --org personal || true
+
+      - name: Deploy to Fly.io
+        id: deploy
+        run: |
+          # Create a temporary fly.toml for this deployment
+          cat > fly.deploy.toml << 'EOF'
+          app = "${{ needs.setup.outputs.app_name }}"
+          primary_region = "${{ inputs.fly_region || 'iad' }}"
+
+          [build]
+            image = "${{ inputs.docker_image || 'n8nio/n8n:nightly' }}"
+
+          [env]
+            N8N_PORT = "5678"
+            N8N_HOST = "0.0.0.0"
+            NODE_ENV = "production"
+            E2E_TESTS = "true"
+            N8N_LOG_LEVEL = "debug"
+            N8N_METRICS = "true"
+            EXECUTIONS_MODE = "regular"
+            GENERIC_TIMEZONE = "UTC"
+            N8N_SECURE_COOKIE = "false"
+            N8N_SKIP_WEBHOOK_DEREGISTRATION_SHUTDOWN = "true"
+
+          [http_service]
+            internal_port = 5678
+            force_https = true
+            auto_stop_machines = "off"
+            auto_start_machines = true
+            min_machines_running = 1
+            processes = ["app"]
+
+          [[http_service.checks]]
+            grace_period = "60s"
+            interval = "30s"
+            method = "GET"
+            path = "/healthz"
+            timeout = "10s"
+
+          [[vm]]
+            memory = "1gb"
+            cpu_kind = "shared"
+            cpus = 1
+          EOF
+
+          echo "Deploying with config:"
+          cat fly.deploy.toml
+
+          flyctl deploy \
+            --config fly.deploy.toml \
+            --app "${{ needs.setup.outputs.app_name }}" \
+            --wait-timeout 300 \
+            --yes
+
+          echo "deployed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for app to be healthy
+        run: |
+          echo "Waiting for app to be healthy..."
+          APP_URL="${{ needs.setup.outputs.app_url }}"
+
+          # Wait up to 5 minutes for the app to be ready
+          for i in {1..30}; do
+            echo "Attempt $i: Checking $APP_URL/healthz"
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL/healthz" || echo "000")
+
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "App is healthy!"
+              exit 0
+            fi
+
+            echo "Got HTTP $HTTP_CODE, waiting 10s..."
+            sleep 10
+          done
+
+          echo "App did not become healthy in time"
+          flyctl logs --app "${{ needs.setup.outputs.app_name }}" -n 100
+          exit 1
+
+      - name: Output deployment info
+        run: |
+          echo "## Fly.io Deployment" >> $GITHUB_STEP_SUMMARY
+          echo "- **App Name:** ${{ needs.setup.outputs.app_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **App URL:** ${{ needs.setup.outputs.app_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Docker Image:** ${{ inputs.docker_image || 'n8nio/n8n:nightly' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Region:** ${{ inputs.fly_region || 'iad' }}" >> $GITHUB_STEP_SUMMARY
+
+  # Run E2E tests against the deployed app
+  test:
+    name: E2E Tests (Shard ${{ matrix.shard }}/${{ strategy.job-total }})
+    needs: [setup, deploy]
+    if: needs.deploy.outputs.deployed == 'true'
+    runs-on: blacksmith-2vcpu-ubuntu-2204
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.setup.outputs.shards_matrix) }}
+    env:
+      N8N_BASE_URL: ${{ needs.setup.outputs.app_url }}
+      PLAYWRIGHT_BROWSERS_PATH: packages/testing/playwright/ms-playwright-cache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.x'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Playwright package
+        run: pnpm turbo build:playwright
+
+      - name: Install Playwright browsers
+        run: pnpm --filter=n8n-playwright exec playwright install chromium --with-deps
+
+      - name: Run E2E tests
+        run: |
+          pnpm --filter=n8n-playwright test:remote \
+            --shard=${{ matrix.shard }}/${{ strategy.job-total }} \
+            --workers=2
+        env:
+          N8N_BASE_URL: ${{ needs.setup.outputs.app_url }}
+          CURRENTS_RECORD_KEY: ${{ secrets.CURRENTS_RECORD_KEY }}
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-report-shard-${{ matrix.shard }}
+          path: packages/testing/playwright/playwright-report/
+          retention-days: 7
+
+      - name: Upload test artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-results-shard-${{ matrix.shard }}
+          path: packages/testing/playwright/test-results/
+          retention-days: 7
+
+  # Cleanup: Destroy the Fly.io app
+  cleanup:
+    name: Cleanup Fly.io App
+    needs: [setup, deploy, test]
+    runs-on: ubuntu-latest
+    if: always() && needs.deploy.outputs.deployed == 'true' && inputs.keep_app != true
+    steps:
+      - name: Setup Fly CLI
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Destroy Fly.io app
+        run: |
+          echo "Destroying Fly.io app: ${{ needs.setup.outputs.app_name }}"
+          flyctl apps destroy "${{ needs.setup.outputs.app_name }}" --yes || true
+
+      - name: Cleanup summary
+        run: |
+          echo "## Cleanup Complete" >> $GITHUB_STEP_SUMMARY
+          echo "Fly.io app **${{ needs.setup.outputs.app_name }}** has been destroyed." >> $GITHUB_STEP_SUMMARY
+
+  # Report test results
+  report:
+    name: Test Results
+    needs: [setup, test]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check test results
+        run: |
+          if [ "${{ needs.test.result }}" == "success" ]; then
+            echo "## Test Results: PASSED" >> $GITHUB_STEP_SUMMARY
+            echo "All E2E tests passed successfully against Fly.io deployment." >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.test.result }}" == "failure" ]; then
+            echo "## Test Results: FAILED" >> $GITHUB_STEP_SUMMARY
+            echo "Some E2E tests failed. Check the test artifacts for details." >> $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo "## Test Results: ${{ needs.test.result }}" >> $GITHUB_STEP_SUMMARY
+          fi
