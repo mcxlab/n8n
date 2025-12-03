@@ -67,8 +67,13 @@ export async function execute(
 		// Clear existing text using direct value manipulation for better reliability
 		await page.evaluate((sel) => {
 			const el = document.querySelector(sel);
-			if (el && 'value' in el && typeof (el as any).value === 'string') {
-				(el as HTMLInputElement | HTMLTextAreaElement).value = '';
+			if (
+				el &&
+				(el instanceof HTMLInputElement ||
+					el instanceof HTMLTextAreaElement ||
+					el instanceof HTMLSelectElement)
+			) {
+				el.value = '';
 			}
 		}, selector);
 	}
