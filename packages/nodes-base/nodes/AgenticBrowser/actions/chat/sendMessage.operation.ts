@@ -207,14 +207,11 @@ export async function execute(
 				// Streaming indicator might not appear for short responses
 				this.logger?.debug('Streaming indicator not found or disappeared quickly');
 			}
-		} else if (responseSelector) {
-			// Wait for response element to appear when no streaming selector is configured
-			await page.waitForSelector(responseSelector, { timeout });
 		}
 
 		// Get response text
 		if (responseSelector) {
-			// Wait for response element
+			// Wait for response element to be present
 			await page.waitForSelector(responseSelector, { timeout });
 
 			// Get the latest response (last matching element)
