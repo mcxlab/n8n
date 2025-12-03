@@ -205,7 +205,9 @@ export async function execute(
 				await page.waitForSelector(streamingSelector, { hidden: true, timeout });
 			} catch (error) {
 				// Streaming indicator might not appear for short responses
-				this.logger?.debug('Streaming indicator not found or disappeared quickly');
+				this.logger?.debug(
+					`Streaming indicator '${streamingSelector}' not found or disappeared quickly`,
+				);
 			}
 		}
 
