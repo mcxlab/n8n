@@ -151,7 +151,7 @@ class BrowserManagerClass {
 			try {
 				await page.close();
 			} catch (error) {
-				console.error(`Error closing page ${pageId}:`, error);
+				// Silently handle page close errors
 			}
 		}
 
@@ -159,7 +159,7 @@ class BrowserManagerClass {
 		try {
 			await session.browser.close();
 		} catch (error) {
-			console.error(`Error closing browser ${sessionId}:`, error);
+			// Silently handle browser close errors
 		}
 
 		this.sessions.delete(sessionId);
