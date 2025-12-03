@@ -19,8 +19,7 @@ export const properties: INodeProperties[] = [
 		},
 		required: true,
 		default: '// Your code here\nreturn document.title;',
-		description:
-			'JavaScript code to execute in the browser context. ⚠️ WARNING: This executes user-provided code. Only use with trusted input sources to avoid security risks.',
+		description: 'JavaScript code to execute in the browser context. ⚠️ WARNING: This executes user-provided code. Only use with trusted input sources to avoid security risks.',
 	},
 	{
 		displayName: 'Page ID',

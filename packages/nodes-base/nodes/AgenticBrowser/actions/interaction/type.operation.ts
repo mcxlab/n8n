@@ -66,9 +66,9 @@ export async function execute(
 	if (clearFirst) {
 		// Clear existing text using direct value manipulation for better reliability
 		await page.evaluate((sel) => {
-			const el = document.querySelector(sel) as HTMLInputElement | HTMLTextAreaElement | null;
-			if (el) {
-				el.value = '';
+			const el = document.querySelector(sel);
+			if (el && 'value' in el && typeof (el as any).value === 'string') {
+				(el as HTMLInputElement | HTMLTextAreaElement).value = '';
 			}
 		}, selector);
 	}
