@@ -175,3 +175,5 @@ The node supports "Continue On Fail" mode. Errors will be returned in the output
 - Secure storage locations appropriately
 - Be cautious with credentials in workflows
 - Consider using n8n credentials system for sensitive data
+- **Script Execution**: The Execute Script operation runs user-provided JavaScript code. Only use with trusted input sources to avoid security risks
+- **Anti-Detection Features**: The stealth mode and anti-bot detection measures may violate terms of service for some websites. Use responsibly and ensure compliance with the target website's policies and legal requirements

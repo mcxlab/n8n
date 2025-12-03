@@ -64,8 +64,18 @@ export async function execute(
 	const page = await BrowserManager.getPage(sessionId, pageId);
 
 	if (clearFirst) {
-		await page.click(selector, { clickCount: 3 }); // Select all
-		await page.keyboard.press('Backspace');
+		// Clear existing text using direct value manipulation for better reliability
+		await page.evaluate((sel) => {
+			const el = document.querySelector(sel);
+			if (
+				el &&
+				(el instanceof HTMLInputElement ||
+					el instanceof HTMLTextAreaElement ||
+					el instanceof HTMLSelectElement)
+			) {
+				el.value = '';
+			}
+		}, selector);
 	}
 
 	await page.type(selector, text, { delay });

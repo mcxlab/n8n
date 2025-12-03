@@ -205,16 +205,15 @@ export async function execute(
 				await page.waitForSelector(streamingSelector, { hidden: true, timeout });
 			} catch (error) {
 				// Streaming indicator might not appear for short responses
-				console.log('Streaming indicator not found or disappeared quickly');
+				this.logger?.debug(
+					`Streaming indicator '${streamingSelector}' not found or disappeared quickly`,
+				);
 			}
-		} else {
-			// Wait a bit for response to appear
-			await page.waitForTimeout(2000);
 		}
 
 		// Get response text
 		if (responseSelector) {
-			// Wait for response element
+			// Wait for response element to be present
 			await page.waitForSelector(responseSelector, { timeout });
 
 			// Get the latest response (last matching element)
